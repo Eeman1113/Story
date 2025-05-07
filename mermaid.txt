@@ -1,0 +1,170 @@
+graph TD
+    %% Styling: Pastel Colors and Clear Shapes
+    classDef input fill:#FFDFD3,stroke:#A67B5B,stroke-width:2px,color:#5C3A21;
+    classDef config fill:#FFFACD,stroke:#D1B874,stroke-width:1px,color:#6B5B2E;
+    classDef orchestrator fill:#D3EFFF,stroke:#79A6DC,stroke-width:2px,color:#2A4D69;
+    classDef llmUtil fill:#E6E0FF,stroke:#A08DCC,stroke-width:2px,color:#4B3B60;
+    classDef chain fill:#D4F8D4,stroke:#7AB87A,stroke-width:2px,color:#2E572E;
+    classDef helper fill:#F0E6FF,stroke:#BCA8E0,stroke-width:1px,color:#544266;
+    classDef data fill:#FFFFE0,stroke:#D4D4AA,stroke-width:1px,color:#5C5C43,rx:5,ry:5;
+    classDef file fill:#FFDAB9,stroke:#D4A37A,stroke-width:2px,color:#6B4C2E;
+    classDef process fill:#E0FFFF,stroke:#7AC5C5,stroke-width:2px,color:#2E6060;
+
+    %% Inputs & Configuration Subgraph
+    subgraph "📁 Inputs & Configuration"
+        direction LR
+        ResumePDF["📄 Resume PDF (e.g., divi_1.pdf)"]:::input
+        SubjectText["📝 Novel Subject Text"]:::input
+        AuthorStyleIn["🎨 Author Style (e.g., Ocean Vuong)"]:::input
+        GenreTextIn["🎭 Genre (e.g., Psychological Fiction)"]:::input
+        OllamaConfig["🔧 Ollama Settings (Model, URL)"]:::config
+        OutputFolderCfg["📂 Output Folder Config (./docs)"]:::config
+        RefineFlag["⚙️ Refinement Pass Flag"]:::config
+    end
+
+    %% Main Orchestrator
+    MainFunc["🚀 main() Orchestrator"]:::orchestrator
+
+    %% LLM Utility
+    CreateLLM["🧠 create_llm() Utility"]:::llmUtil
+
+    %% Data Products (Intermediate and Final)
+    ProfileData["👤 Character Profile"]:::data
+    SettingData["🏞️ Setting Description"]:::data
+    ThemesDictData["💡 Themes Dictionary"]:::data
+    FormattedThemesStr["📜 Formatted Themes String"]:::data
+    TitleData["🏷️ Novel Title"]:::data
+    PlotData["🗺️ Plot Outline"]:::data
+    SortedChapterDictData["📖 Sorted Chapter Dictionary (Title: Summary)"]:::data
+    EventDictData["⚡ Event Dictionary (Chapter: [Events])"]:::data
+    BookContentRaw["✍️ Raw Book Content (by chapter)"]:::data
+    BookContentFinal["✨ Final Book Content (potentially refined)"]:::data
+    FinalDocx["📜 Generated Novel.docx"]:::file
+
+    %% Core Processing Chains & Major Functions
+    CharacterChain["👤 MainCharacterChain"]:::chain
+    SettingChain["🏞️ SettingChain"]:::chain
+    ThemeChain["💡 ThemeChain"]:::chain
+    TitleChain["🏷️ TitleChain"]:::chain
+    PlotChain["🗺️ PlotChain (incl. internal feature generation)"]:::chain
+    ChaptersChain["📖 ChaptersChain (incl. internal sorting)"]:::chain
+    GenerateEventsFunc["🔄 generate_events_for_all_chapters()"]:::process
+        EventChainInstance["⚡ EventChain (used by GenerateEventsFunc)"]:::chain
+    WriteBookFunc["✒️ write_book()"]:::process
+        WriterChainInstance["✍️ WriterChain (used by WriteBookFunc)"]:::chain
+        RefinementChainInstance["✨ RefinementChain (Optional, used by WriteBookFunc)"]:::chain
+    DocWriter["📝 DocWriter"]:::chain
+    FormatThemesFunc["🔧 format_themes_string()"]:::helper
+
+    %% Flow: From Inputs through Main Orchestration to Chains and Output
+
+    %% Configuration and LLM Setup
+    OllamaConfig   --> CreateLLM
+    CharacterChain          --> CreateLLM
+    SettingChain            --> CreateLLM
+    ThemeChain              --> CreateLLM
+    TitleChain              --> CreateLLM
+    PlotChain               --> CreateLLM
+    ChaptersChain           --> CreateLLM
+    EventChainInstance      --> CreateLLM
+    WriterChainInstance     --> CreateLLM
+    RefinementChainInstance --> CreateLLM
+
+    %% Step 1: Character Profile Generation
+    MainFunc       --> CharacterChain
+    ResumePDF      -.-> CharacterChain
+    GenreTextIn    -.-> CharacterChain
+    CharacterChain -.-> ProfileData
+
+    %% Step 2: Setting Description Generation
+    MainFunc       --> SettingChain
+    SubjectText    -.-> SettingChain
+    GenreTextIn    -.-> SettingChain
+    ProfileData    -.-> SettingChain
+    SettingChain   -.-> SettingData
+
+    %% Step 3: Theme Generation
+    MainFunc       --> ThemeChain
+    SubjectText    -.-> ThemeChain
+    GenreTextIn    -.-> ThemeChain
+    ProfileData    -.-> ThemeChain
+    SettingData    -.-> ThemeChain
+    ThemeChain     -.-> ThemesDictData
+    ThemesDictData -.-> FormatThemesFunc
+    FormatThemesFunc -.-> FormattedThemesStr
+
+    %% Step 4: Title Generation
+    MainFunc           --> TitleChain
+    SubjectText        -.-> TitleChain
+    GenreTextIn        -.-> TitleChain
+    AuthorStyleIn      -.-> TitleChain
+    ProfileData        -.-> TitleChain
+    SettingData        -.-> TitleChain
+    FormattedThemesStr -.-> TitleChain
+    TitleChain         -.-> TitleData
+
+    %% Step 5: Plot Outline Generation
+    MainFunc           --> PlotChain
+    SubjectText        -.-> PlotChain
+    GenreTextIn        -.-> PlotChain
+    AuthorStyleIn      -.-> PlotChain
+    ProfileData        -.-> PlotChain
+    TitleData          -.-> PlotChain
+    SettingData        -.-> PlotChain
+    FormattedThemesStr -.-> PlotChain
+    PlotChain          -.-> PlotData
+
+    %% Step 6: Chapter List Generation
+    MainFunc           --> ChaptersChain
+    SubjectText        -.-> ChaptersChain
+    GenreTextIn        -.-> ChaptersChain
+    AuthorStyleIn      -.-> ChaptersChain
+    ProfileData        -.-> ChaptersChain
+    TitleData          -.-> ChaptersChain
+    PlotData           -.-> ChaptersChain
+    SettingData        -.-> ChaptersChain
+    FormattedThemesStr -.-> ChaptersChain
+    ChaptersChain      -.-> SortedChapterDictData
+
+    %% Step 7: Event Generation for All Chapters
+    MainFunc                --> GenerateEventsFunc
+    GenerateEventsFunc      --> EventChainInstance
+    PlotData                -.-> GenerateEventsFunc
+    ProfileData             -.-> GenerateEventsFunc
+    FormattedThemesStr      -.-> GenerateEventsFunc
+    SortedChapterDictData   -.-> GenerateEventsFunc
+    AuthorStyleIn           -.-> GenerateEventsFunc
+    GenerateEventsFunc      -.-> EventDictData
+
+    %% Step 8: Writing Full Book Content
+    MainFunc                --> WriteBookFunc
+    WriteBookFunc           --> WriterChainInstance
+    WriteBookFunc           --> RefinementChainInstance
+    RefineFlag              -.-> WriteBookFunc
+    GenreTextIn             -.-> WriteBookFunc
+    AuthorStyleIn           -.-> WriteBookFunc
+    TitleData               -.-> WriteBookFunc
+    ProfileData             -.-> WriteBookFunc
+    PlotData                -.-> WriteBookFunc
+    SettingData             -.-> WriteBookFunc
+    FormattedThemesStr      -.-> WriteBookFunc
+    SortedChapterDictData   -.-> WriteBookFunc
+    EventDictData           -.-> WriteBookFunc
+    WriterChainInstance     -.-> BookContentRaw
+    BookContentRaw          -.-> RefinementChainInstance
+    RefinementChainInstance -.-> BookContentFinal
+    WriteBookFunc           -.-> BookContentFinal
+
+
+    %% Step 9: Saving Document
+    MainFunc          --> DocWriter
+    OutputFolderCfg   -.-> DocWriter
+    BookContentFinal  -.-> DocWriter
+    SortedChapterDictData -.-> DocWriter
+    TitleData         -.-> DocWriter
+    GenreTextIn       -.-> DocWriter
+    AuthorStyleIn     -.-> DocWriter
+    ThemesDictData    -.-> DocWriter
+    SettingData       -.-> DocWriter
+    DocWriter         -.-> FinalDocx
+end

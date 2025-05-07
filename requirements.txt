@@ -1,0 +1,17 @@
+# Core application and LLM interaction
+langchain>=0.1.0,<0.2.0
+langchain-community>=0.0.30,<0.1.0
+langchain-ollama>=0.1.0,<0.2.0
+
+# PDF and Document Handling
+pypdf>=3.0.0,<4.0.0
+python-docx>=1.0.0,<2.0.0
+
+# Frontend
+streamlit>=1.30.0,<2.0.0
+
+# Environment variables (optional but used in backend)
+python-dotenv>=1.0.0,<2.0.0
+
+# Note: Ensure you have Ollama installed and running separately.
+# https://ollama.com/
