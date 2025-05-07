@@ -28,10 +28,6 @@ class BookGenerator:
         """Get the story premise and number of chapters from the user"""
         print(
             """
-──────────────────────────────────────────────────────────────────────────────────
-                      N O V E L   G E N E R A T O R   2 . 5
-──────────────────────────────────────────────────────────────────────────────────
-ENGINE: Running on Ollama with gemma2:27b
 CAPABILITIES: Creates novels or fanfiction with consistency checks
 GENERATION TIME: Up to an hour depending on computational resources
 STORY INPUT: One paragraph up to 830 characters with your plot idea
