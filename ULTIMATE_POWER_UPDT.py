@@ -23,9 +23,12 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 class NovelGenerator:
     def __init__(self, resume_content, subject, author_style, genre):
+        # Clean up author_style input to remove potential formatting directives
+        self.author_style = author_style.split("\n")[0].strip()  # Only take first line
+        self.author_style = re.sub(r"Genre:.*$", "", self.author_style, flags=re.IGNORECASE).strip()
+        
         self.resume_content = resume_content
         self.subject = subject
-        self.author_style = author_style
         self.genre = genre
         self.num_chapters = 0 # Will be determined by the AI
 
@@ -447,121 +450,263 @@ Begin your response with Act I.
         # Clean plot_outline from chapter count for this prompt
         clean_plot_outline_for_detailed_plan = re.sub(r"SUGGESTED_CHAPTER_COUNT:\s*\d+", "", self.plot_outline, flags=re.IGNORECASE).strip()
 
-
-        detailed_plan_prompt = f"""
-        Novel Subject: {self.subject}
-        High-Level Plot Outline:
-        {clean_plot_outline_for_detailed_plan}
-
-        Character Summaries:
-        {character_summary_for_prompt}
-
-        World Summary:
-        {world_summary_for_prompt}
-
-        Themes & Motifs:
-        {themes_for_prompt}
-
-        Total Chapters to Plan: {self.num_chapters}
-
-        Based on ALL the information above, create a VERY DETAILED plan for EACH chapter (1 through {self.num_chapters}).
-        For EACH chapter, provide STRICTLY the following, in this order and clearly labeled:
-
-        Chapter [Number] - [Evocative Title for this Chapter]:
-        1.  CHAPTER GOAL: [A single paragraph (50-80 words) stating the primary narrative goal this chapter needs to achieve in the overall story and how it impacts the main character's arc or the central conflict.]
-        2.  KEY SCENES (3-6 scenes): [Bulleted list. Each scene: "- Scene X: [Brief description of action/dialogue/internal monologue], Location: [Specific location from World Details or new minor one], Characters Involved: [List characters present & active], Key Revelation/Turning Point/Outcome: [What changes, is learned, or achieved? How does it advance the plot or character?]]
-        3.  CHARACTER DEVELOPMENT FOCUS: [For key characters appearing: How do their motivations, relationships, knowledge, or understanding change in THIS chapter? Be specific. e.g., "Jessica: Confronts her fear of X, strengthening her resolve but creating friction with Y. Learns Z about her past."]
-        4.  PLOT ADVANCEMENT: [Specific ways the main plot and any subplots move forward. What new questions are raised or old ones answered? How does this chapter build on the previous and set up the next?]
-        5.  TIMELINE & PACING: [e.g., "This chapter takes place over a few hours the next day.", "Pacing: Fast, with building tension.", "Spans one week, slower reflective pace initially, then accelerates."]
-        6.  EMOTIONAL TONE (End of Chapter): [e.g., "Hopeful but wary," "Tense and suspenseful," "Melancholy and reflective," "Ominous and foreboding."]
-        7.  CONNECTION TO NEXT CHAPTER (Setup/Hook): [Explicitly state 1-2 elements, questions, cliffhangers, or character decisions that directly lead into the next chapter's planned events or themes.]
-
-        This detailed plan must ensure logical progression, character consistency, integration of themes/motifs, and effective pacing.
-        A character's status (location, knowledge, emotional state) at the end of one chapter MUST be the starting point for the next.
-        Ensure the plans for later chapters logically follow from the resolutions and developments of earlier ones.
-        The first chapter should introduce the protagonist and the inciting incident. The final chapters should bring the main plot threads to a climax and resolution.
-        Do not include the "SUGGESTED_CHAPTER_COUNT" line in this response.
-        Begin with "Chapter 1 - ...".
-        """
-        print(f"Generating detailed plan text for {self.num_chapters} chapters (this may take a while)...")
-        full_detailed_plan_text = self._ollama_generate(detailed_plan_prompt, system_prompt, temperature=0.65)
-
-        if "[OLLAMA" in full_detailed_plan_text:
-            print(f"ERROR generating detailed chapter plans: {full_detailed_plan_text}")
-            return False
-
-        current_chapter_num = 0
-        # Modified split pattern to handle markdown formatting (** for bold)
-        chapter_blocks = re.split(r"(?=^(?:\*\*)?Chapter\s*\d+\s*[-:])", full_detailed_plan_text, flags=re.MULTILINE | re.IGNORECASE)
-
-        for block in chapter_blocks:
-            block = block.strip()
-            if not block: continue
-
-            # Modified to handle markdown formatting (** for bold) in chapter titles
-            title_match = re.match(r"(?:\*\*)?Chapter\s*(\d+)\s*[-:]?\s*(.*?)(?:\*\*)?(?=\n\s*(?:1\.\s*CHAPTER GOAL:|CHAPTER GOAL:|#|$))", block, re.IGNORECASE)
+        # Breaking the chapters into smaller batches to handle context limits
+        max_chapters_per_batch = 12
+        num_batches = (self.num_chapters + max_chapters_per_batch - 1) // max_chapters_per_batch  # Ceiling division
+        
+        all_chapter_plans_successful = True
+        
+        for batch_idx in range(num_batches):
+            start_chapter = batch_idx * max_chapters_per_batch + 1
+            end_chapter = min((batch_idx + 1) * max_chapters_per_batch, self.num_chapters)
             
-            if title_match:
-                current_chapter_num = int(title_match.group(1))
-                chapter_title = title_match.group(2).strip()
-                if not chapter_title: chapter_title = f"Chapter {current_chapter_num} (Untitled)"
+            print(f"Generating detailed plan text for chapters {start_chapter}-{end_chapter} (batch {batch_idx+1}/{num_batches})...")
 
-                # Only add if chapter number is within expected range
-                if current_chapter_num > self.num_chapters :
-                    print(f"Warning: Parsed plan for Chapter {current_chapter_num}, which exceeds expected {self.num_chapters} chapters. Skipping.")
-                    continue
-                if current_chapter_num <=0:
-                    print(f"Warning: Parsed plan for invalid Chapter {current_chapter_num}. Skipping.")
-                    continue
+            batch_prompt = f"""
+            Novel Subject: {self.subject}
+            High-Level Plot Outline:
+            {clean_plot_outline_for_detailed_plan}
 
+            Character Summaries:
+            {character_summary_for_prompt}
 
-                self.chapter_plans[current_chapter_num] = {"number": current_chapter_num, "title": chapter_title}
-                plan_details = self.chapter_plans[current_chapter_num]
+            World Summary:
+            {world_summary_for_prompt}
 
-                # More robust parsing for each section, looking for the numbered headers
-                goal_match = re.search(r"(?:1\.\s*CHAPTER GOAL:|CHAPTER GOAL:)\s*(.*?)(?=\n\s*(?:2\.\s*KEY SCENES:|KEY SCENES:|#|$))", block, re.IGNORECASE | re.DOTALL)
-                plan_details["goal"] = goal_match.group(1).strip() if goal_match else "N/A"
+            Themes & Motifs:
+            {themes_for_prompt}
 
-                scenes_match = re.search(r"(?:2\.\s*KEY SCENES:|KEY SCENES:)\s*(.*?)(?=\n\s*(?:3\.\s*CHARACTER DEVELOPMENT FOCUS:|CHARACTER DEVELOPMENT FOCUS:|#|$))", block, re.IGNORECASE | re.DOTALL)
-                if scenes_match:
-                    scenes_text = scenes_match.group(1).strip()
-                    plan_details["scenes"] = [s.strip() for s in re.split(r'\n\s*(?:-\s*Scene|\*\s*Scene|\d\.\s*Scene)', scenes_text) if s.strip()]
-                    plan_details["scenes"] = [re.sub(r'^(-\s*Scene\s*\d*:?\s*|-\s*|\*\s*Scene\s*\d*:?\s*|\*\s*|\d\.\s*Scene\s*\d*:?\s*|\d\.\s*)', '', s).strip() for s in plan_details["scenes"]]
-                else: plan_details["scenes"] = []
+            Total Chapters in Novel: {self.num_chapters}
+            
+            I need you to create DETAILED PLANS for chapters {start_chapter} through {end_chapter} only.
+            For EACH chapter, provide STRICTLY the following, in this order and clearly labeled:
 
-                char_dev_match = re.search(r"(?:3\.\s*CHARACTER DEVELOPMENT FOCUS:|CHARACTER DEVELOPMENT FOCUS:)\s*(.*?)(?=\n\s*(?:4\.\s*PLOT ADVANCEMENT:|PLOT ADVANCEMENT:|#|$))", block, re.IGNORECASE | re.DOTALL)
-                plan_details["character_development"] = char_dev_match.group(1).strip() if char_dev_match else "N/A"
+            Chapter [Number] - [Evocative Title for this Chapter]:
+            1.  CHAPTER GOAL: [A single paragraph (50-80 words) stating the primary narrative goal this chapter needs to achieve in the overall story and how it impacts the main character's arc or the central conflict.]
+            2.  KEY SCENES (3-6 scenes): [Bulleted list. Each scene: "- Scene X: [Brief description of action/dialogue/internal monologue], Location: [Specific location from World Details or new minor one], Characters Involved: [List characters present & active], Key Revelation/Turning Point/Outcome: [What changes, is learned, or achieved? How does it advance the plot or character?]]
+            3.  CHARACTER DEVELOPMENT FOCUS: [For key characters appearing: How do their motivations, relationships, knowledge, or understanding change in THIS chapter? Be specific. e.g., "Jessica: Confronts her fear of X, strengthening her resolve but creating friction with Y. Learns Z about her past."]
+            4.  PLOT ADVANCEMENT: [Specific ways the main plot and any subplots move forward. What new questions are raised or old ones answered? How does this chapter build on the previous and set up the next?]
+            5.  TIMELINE & PACING: [e.g., "This chapter takes place over a few hours the next day.", "Pacing: Fast, with building tension.", "Spans one week, slower reflective pace initially, then accelerates."]
+            6.  EMOTIONAL TONE (End of Chapter): [e.g., "Hopeful but wary," "Tense and suspenseful," "Melancholy and reflective," "Ominous and foreboding."]
+            7.  CONNECTION TO NEXT CHAPTER (Setup/Hook): [Explicitly state 1-2 elements, questions, cliffhangers, or character decisions that directly lead into the next chapter's planned events or themes.]
 
-                plot_adv_match = re.search(r"(?:4\.\s*PLOT ADVANCEMENT:|PLOT ADVANCEMENT:)\s*(.*?)(?=\n\s*(?:5\.\s*TIMELINE & PACING:|TIMELINE & PACING:|#|$))", block, re.IGNORECASE | re.DOTALL)
-                plan_details["plot_advancement"] = plot_adv_match.group(1).strip() if plot_adv_match else "N/A"
+            This detailed plan must ensure logical progression, character consistency, integration of themes/motifs, and effective pacing.
+            A character's status (location, knowledge, emotional state) at the end of one chapter MUST be the starting point for the next.
+            Ensure the plans for later chapters logically follow from the resolutions and developments of earlier ones.
+            
+            Begin directly with "Chapter {start_chapter} - " without any preamble.
+            """
 
-                timeline_match = re.search(r"(?:5\.\s*TIMELINE & PACING:|TIMELINE & PACING:)\s*(.*?)(?=\n\s*(?:6\.\s*EMOTIONAL TONE \(End of Chapter\):|EMOTIONAL TONE \(End of Chapter\):|#|$))", block, re.IGNORECASE | re.DOTALL)
-                plan_details["timeline_pacing"] = timeline_match.group(1).strip() if timeline_match else "N/A"
+            batch_chapter_plans_text = self._ollama_generate(batch_prompt, system_prompt, temperature=0.65)
 
-                emotion_match = re.search(r"(?:6\.\s*EMOTIONAL TONE \(End of Chapter\):|EMOTIONAL TONE \(End of Chapter\):)\s*(.*?)(?=\n\s*(?:7\.\s*CONNECTION TO NEXT CHAPTER:|CONNECTION TO NEXT CHAPTER:|#|$))", block, re.IGNORECASE | re.DOTALL)
-                plan_details["emotional_tone_end"] = emotion_match.group(1).strip() if emotion_match else "N/A"
+            if "[OLLAMA" in batch_chapter_plans_text:
+                print(f"ERROR generating batch of chapter plans ({start_chapter}-{end_chapter}): {batch_chapter_plans_text}")
+                all_chapter_plans_successful = False
+                continue
+                
+            self._parse_chapter_plans(batch_chapter_plans_text)
 
-                connection_match = re.search(r"(?:7\.\s*CONNECTION TO NEXT CHAPTER:|CONNECTION TO NEXT CHAPTER:)\s*(.*?)(?=$|\n\s*#)", block, re.IGNORECASE | re.DOTALL) # Use # as a potential end marker too
-                plan_details["connection_to_next"] = connection_match.group(1).strip() if connection_match else "N/A"
-            else:
-                 # This block might be introductory text from the LLM before "Chapter 1..."
-                 if not self.chapter_plans and "Chapter 1" not in block and len(block) < 300: # Heuristic
-                     print(f"Skipping potential preamble in detailed plan output: {block[:100]}...")
-
-
-        if not self.chapter_plans or len(self.chapter_plans) == 0:
-            print("ERROR: No chapter plans were successfully parsed. The LLM output might not conform to the expected structure.")
-            print("--- LLM Output Start (first 2000 chars) ---")
-            print(full_detailed_plan_text[:2000])
-            print("--- LLM Output End ---")
+        # Now check if we have enough chapter plans
+        if not self.chapter_plans:
+            print("ERROR: No chapter plans were successfully parsed from any batch.")
             return False
-
+        
         print(f"Successfully parsed detailed plans for {len(self.chapter_plans)} chapters out of {self.num_chapters} expected.")
+        
+        # For any missing chapters, generate fallback plans
+        missing_chapters = [i for i in range(1, self.num_chapters + 1) if i not in self.chapter_plans]
+        if missing_chapters:
+            print(f"Generating fallback plans for {len(missing_chapters)} missing chapters: {missing_chapters}")
+            self._generate_fallback_chapter_plans(missing_chapters)
+        
+        # Count chapters again after fallback generation
         if len(self.chapter_plans) != self.num_chapters:
-              print(f"WARNING: Mismatch in parsed plans ({len(self.chapter_plans)}) and expected chapters ({self.num_chapters}). Review LLM output for plan structure.")
-              # This could be due to LLM not generating all requested chapters, or parsing issues.
-              # For now, we proceed but this might cause issues if later chapters are expected by logic.
+            print(f"WARNING: Still have a mismatch in parsed plans ({len(self.chapter_plans)}) and expected chapters ({self.num_chapters}).")
+            return len(self.chapter_plans) > 0  # Continue if we have at least some plans
+            
         return True
+
+    def _parse_chapter_plans(self, chapter_plans_text):
+        """Parse chapter plans from the LLM's output text."""
+        # This handles many different possible chapter heading formats
+        chapter_regex_patterns = [
+            # Standard format: "Chapter X - Title"
+            r"(?:^|\n)(?:\*\*)?Chapter\s*(\d+)\s*-\s*(.*?)(?:\*\*)?(?=\n|$)",
+            # Alternative format: "Chapter X: Title"
+            r"(?:^|\n)(?:\*\*)?Chapter\s*(\d+)\s*:\s*(.*?)(?:\*\*)?(?=\n|$)",
+            # Possible markdown: "# Chapter X - Title"
+            r"(?:^|\n)#\s*(?:\*\*)?Chapter\s*(\d+)\s*[-:]\s*(.*?)(?:\*\*)?(?=\n|$)",
+            # Just chapter number: "Chapter X"
+            r"(?:^|\n)(?:\*\*)?Chapter\s*(\d+)(?:\*\*)?(?=\n|$)"
+        ]
+        
+        # First, find all chapter starts and their positions in the text
+        chapter_positions = []
+        for pattern in chapter_regex_patterns:
+            for match in re.finditer(pattern, chapter_plans_text, re.MULTILINE):
+                try:
+                    chapter_num = int(match.group(1))
+                    chapter_title = match.group(2).strip() if len(match.groups()) > 1 else f"Chapter {chapter_num}"
+                    position = match.start()
+                    chapter_positions.append((chapter_num, chapter_title, position))
+                except (IndexError, ValueError):
+                    continue
+        
+        # Sort by position in the text to preserve order
+        chapter_positions.sort(key=lambda x: x[2])
+        
+        # Now extract the content between each chapter heading
+        for i, (chapter_num, chapter_title, start_pos) in enumerate(chapter_positions):
+            # Find the end position (either the next chapter start or the end of text)
+            end_pos = chapter_positions[i+1][2] if i+1 < len(chapter_positions) else len(chapter_plans_text)
+            chapter_content = chapter_plans_text[start_pos:end_pos].strip()
+            
+            # Parse the chapter content
+            self._parse_single_chapter_plan(chapter_num, chapter_title, chapter_content)
+
+    def _parse_single_chapter_plan(self, chapter_num, chapter_title, chapter_content):
+        """Parse a single chapter's plan from its content."""
+        if chapter_num in self.chapter_plans:
+            print(f"  Note: Chapter {chapter_num} plan already exists, skipping.")
+            return
+            
+        plan_details = {
+            "number": chapter_num,
+            "title": chapter_title,
+            "goal": "N/A",
+            "scenes": [],
+            "character_development": "N/A",
+            "plot_advancement": "N/A",
+            "timeline_pacing": "N/A",
+            "emotional_tone_end": "N/A",
+            "connection_to_next": "N/A"
+        }
+        
+        # Extract each section using regex
+        sections = {
+            "goal": r"(?:1\.\s*CHAPTER GOAL:|CHAPTER GOAL:)\s*(.*?)(?=\n\s*(?:2\.\s*KEY SCENES:|KEY SCENES:|$))",
+            "scenes": r"(?:2\.\s*KEY SCENES:|KEY SCENES:)\s*(.*?)(?=\n\s*(?:3\.\s*CHARACTER DEVELOPMENT|CHARACTER DEVELOPMENT|$))",
+            "character_development": r"(?:3\.\s*CHARACTER DEVELOPMENT FOCUS:|CHARACTER DEVELOPMENT FOCUS:)\s*(.*?)(?=\n\s*(?:4\.\s*PLOT ADVANCEMENT|PLOT ADVANCEMENT|$))",
+            "plot_advancement": r"(?:4\.\s*PLOT ADVANCEMENT:|PLOT ADVANCEMENT:)\s*(.*?)(?=\n\s*(?:5\.\s*TIMELINE|TIMELINE|$))",
+            "timeline_pacing": r"(?:5\.\s*TIMELINE & PACING:|TIMELINE & PACING:)\s*(.*?)(?=\n\s*(?:6\.\s*EMOTIONAL|EMOTIONAL|$))",
+            "emotional_tone_end": r"(?:6\.\s*EMOTIONAL TONE \(End of Chapter\):|EMOTIONAL TONE:)\s*(.*?)(?=\n\s*(?:7\.\s*CONNECTION|CONNECTION|$))",
+            "connection_to_next": r"(?:7\.\s*CONNECTION TO NEXT CHAPTER|CONNECTION TO NEXT CHAPTER:)\s*(.*?)(?=$)"
+        }
+        
+        for key, pattern in sections.items():
+            match = re.search(pattern, chapter_content, re.IGNORECASE | re.DOTALL)
+            if match:
+                if key == "scenes":
+                    scenes_text = match.group(1).strip()
+                    # Split scenes by bullet points or scene markers
+                    scenes = re.split(r'\n\s*(?:-\s*|\*\s*|•\s*|\d+\.\s*)', scenes_text)
+                    # Remove empty scenes and clean up
+                    scenes = [s.strip() for s in scenes if s.strip()]
+                    plan_details[key] = scenes
+                else:
+                    plan_details[key] = match.group(1).strip()
+        
+        self.chapter_plans[chapter_num] = plan_details
+        print(f"  Parsed plan for Chapter {chapter_num}: {chapter_title}")
+
+    def _generate_fallback_chapter_plans(self, missing_chapters):
+        """Generate fallback plans for missing chapters."""
+        for chapter_num in missing_chapters:
+            # For chapters without plans, we'll generate a simplified plan
+            main_protagonist = next(iter(self.characters.values()))
+            main_character_name = main_protagonist.get("name", "Protagonist")
+            
+            act_structure = "beginning" if chapter_num <= self.num_chapters//3 else \
+                           "middle" if chapter_num <= 2*self.num_chapters//3 else "end"
+            
+            if chapter_num == 1:
+                chapter_type = "introduction"
+            elif chapter_num == self.num_chapters:
+                chapter_type = "conclusion"
+            elif chapter_num % 10 == 0:
+                chapter_type = "pivotal"
+            else:
+                chapter_type = "development"
+
+            system_prompt = f"You are a plot architect for {self.genre} novels."
+            
+            prompt = f"""
+            Based on the following novel information, create a detailed plan for chapter {chapter_num} of {self.num_chapters}.
+            This is a {chapter_type} chapter in the {act_structure} of the story.
+            
+            Novel Subject: {self.subject[:500]}...
+            Genre: {self.genre}
+            Main Character: {main_character_name}
+            World: {self.world_details.get('name', 'The world')}
+            
+            Create a plan with:
+            1. Chapter title (evocative, fitting the genre and story)
+            2. Chapter goal (what this chapter accomplishes)
+            3. 3 key scenes
+            4. Character development
+            5. Plot advancement
+            6. Timeline and pacing
+            7. Emotional tone
+            8. Connection to next chapter
+            
+            Format your response like this:
+            TITLE: [Chapter Title]
+            GOAL: [Chapter goal]
+            SCENES: [Scene 1], [Scene 2], [Scene 3]
+            CHARACTER_DEVELOPMENT: [Development details]
+            PLOT_ADVANCEMENT: [Plot details]
+            TIMELINE: [Timeline info]
+            EMOTIONAL_TONE: [Tone at end]
+            CONNECTION: [Hook for next chapter]
+            """
+            
+            plan_response = self._ollama_generate(prompt, system_prompt, temperature=0.7)
+            
+            if "[OLLAMA" in plan_response:
+                print(f"  Failed to generate fallback plan for Chapter {chapter_num}. Using minimal placeholder.")
+                # Use absolute minimum fallback
+                self.chapter_plans[chapter_num] = {
+                    "number": chapter_num,
+                    "title": f"Chapter {chapter_num}",
+                    "goal": "Continue the story progression",
+                    "scenes": ["Key scene in the narrative", "Character interaction", "Plot development"],
+                    "character_development": f"{main_character_name} continues their journey",
+                    "plot_advancement": "The story moves forward",
+                    "timeline_pacing": "Continues from previous chapter",
+                    "emotional_tone_end": "Mixed emotions",
+                    "connection_to_next": "Leads to next events"
+                }
+            else:
+                # Parse the response
+                title_match = re.search(r"TITLE:\s*(.*?)(?:\n|$)", plan_response, re.IGNORECASE)
+                goal_match = re.search(r"GOAL:\s*(.*?)(?:\n|$)", plan_response, re.IGNORECASE)
+                scenes_match = re.search(r"SCENES:\s*(.*?)(?:\n|$)", plan_response, re.IGNORECASE)
+                char_dev_match = re.search(r"CHARACTER_DEVELOPMENT:\s*(.*?)(?:\n|$)", plan_response, re.IGNORECASE)
+                plot_match = re.search(r"PLOT_ADVANCEMENT:\s*(.*?)(?:\n|$)", plan_response, re.IGNORECASE)
+                timeline_match = re.search(r"TIMELINE:\s*(.*?)(?:\n|$)", plan_response, re.IGNORECASE)
+                tone_match = re.search(r"EMOTIONAL_TONE:\s*(.*?)(?:\n|$)", plan_response, re.IGNORECASE)
+                connection_match = re.search(r"CONNECTION:\s*(.*?)(?:\n|$)", plan_response, re.IGNORECASE)
+                
+                title = title_match.group(1).strip() if title_match else f"Chapter {chapter_num}"
+                goal = goal_match.group(1).strip() if goal_match else "Continue the story"
+                scenes_text = scenes_match.group(1).strip() if scenes_match else ""
+                scenes = [s.strip() for s in scenes_text.split(',') if s.strip()]
+                if not scenes:
+                    scenes = ["Key scene in the narrative", "Character interaction", "Plot development"]
+                
+                self.chapter_plans[chapter_num] = {
+                    "number": chapter_num,
+                    "title": title,
+                    "goal": goal,
+                    "scenes": scenes,
+                    "character_development": char_dev_match.group(1).strip() if char_dev_match else "Character development continues",
+                    "plot_advancement": plot_match.group(1).strip() if plot_match else "The plot advances",
+                    "timeline_pacing": timeline_match.group(1).strip() if timeline_match else "Time passes",
+                    "emotional_tone_end": tone_match.group(1).strip() if tone_match else "Mixed emotions",
+                    "connection_to_next": connection_match.group(1).strip() if connection_match else "Events lead to next chapter"
+                }
+                
+            print(f"  Generated fallback plan for Chapter {chapter_num}: {self.chapter_plans[chapter_num]['title']}")
 
     # --- Phase 3: Prose Generation Loop ---
     def _get_continuity_context_for_chapter(self, chapter_num):
@@ -893,9 +1038,16 @@ Begin your response with Act I.
         MARKERS: [answer]
         """
         timeline_text = self._ollama_generate(timeline_prompt, timeline_system_prompt, temperature=0.4)
-        entry["timeline_elapsed"] = re.search(r"ELAPSED:\s*(.*)", timeline_text, re.IGNORECASE).group(1).strip() if re.search(r"ELAPSED:\s*(.*)", timeline_text, re.IGNORECASE) else "N/A"
-        entry["timeline_end"] = re.search(r"END_TIME:\s*(.*)", timeline_text, re.IGNORECASE).group(1).strip() if re.search(r"END_TIME:\s*(.*)", timeline_text, re.IGNORECASE) else "N/A"
-        entry["timeline_markers"] = re.search(r"MARKERS:\s*(.*)", timeline_text, re.IGNORECASE).group(1).strip() if re.search(r"MARKERS:\s*(.*)", timeline_text, re.IGNORECASE) else "N/A"
+        
+        # More efficient regex use
+        elapsed_match = re.search(r"ELAPSED:\s*(.*?)(?:\n|$)", timeline_text, re.IGNORECASE)
+        entry["timeline_elapsed"] = elapsed_match.group(1).strip() if elapsed_match else "N/A"
+        
+        end_time_match = re.search(r"END_TIME:\s*(.*?)(?:\n|$)", timeline_text, re.IGNORECASE)
+        entry["timeline_end"] = end_time_match.group(1).strip() if end_time_match else "N/A"
+        
+        markers_match = re.search(r"MARKERS:\s*(.*?)(?:\n|$)", timeline_text, re.IGNORECASE)
+        entry["timeline_markers"] = markers_match.group(1).strip() if markers_match else "N/A"
 
         entry["emotional_tone_end_achieved_in_summary"] = entry["summary"][-300:]
         if "ending_hook_text" not in entry:
@@ -1269,6 +1421,19 @@ Begin your response with Act I.
         except Exception as e:
             print(f"ERROR saving .docx file: {e}")
 
+        # Safely serialize metadata
+        def serialize_for_json(obj):
+            """Helper to make complex objects JSON serializable"""
+            if isinstance(obj, dict):
+                return {k: serialize_for_json(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [serialize_for_json(i) for i in obj]
+            elif isinstance(obj, (int, float, str, bool, type(None))):
+                return obj
+            else:
+                return str(obj)  # Convert any other types to strings
+
+        # Prepare metadata with serialization for safety
         metadata = {
             "title": self.novel_title,
             "subject": self.subject,
@@ -1277,13 +1442,14 @@ Begin your response with Act I.
             "num_chapters_determined": self.num_chapters,
             "ollama_model_used": OLLAMA_MODEL,
             "generation_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "characters_final": self.characters,
-            "world_details": self.world_details,
-            "themes_motifs": self.themes_motifs,
+            "characters_final": serialize_for_json(self.characters),
+            "world_details": serialize_for_json(self.world_details),
+            "themes_motifs": serialize_for_json(self.themes_motifs),
             "plot_outline": self.plot_outline,
-            "chapter_plans": self.chapter_plans,
-            "chapter_continuity_data": self.chapter_continuity_data,
+            "chapter_plans": serialize_for_json(self.chapter_plans),
+            "chapter_continuity_data": serialize_for_json(self.chapter_continuity_data),
         }
+        
         meta_filename = f"{safe_title[:50]}_Novel_METADATA.json"
         meta_filepath = os.path.join(OUTPUT_DIR, meta_filename)
         try:
@@ -1370,25 +1536,14 @@ def load_resume_text(file_path):
             try:
                 with open(file_path, 'rb') as f:
                     reader = pypdf.PdfReader(f)
-                    # Check if PDF is encrypted - implementation depends on pypdf version
-                    is_encrypted = getattr(reader, "is_encrypted", None)
-                    if is_encrypted is not None:  # New pypdf versions
-                        if reader.is_encrypted:
-                            try:
-                                # Attempt to decrypt with empty password
-                                if reader.decrypt('') == 0:  # 0 means failed
-                                    print(f"Warning: PDF file '{file_path}' is encrypted and could not be decrypted with empty password.")
-                                    return ""
-                            except Exception as de:
-                                print(f"Warning: PDF file '{file_path}' is encrypted. Attempt to decrypt failed: {de}. Cannot extract text.")
-                                return ""
-                    else:  # Older pypdf versions
-                        try:
-                            if hasattr(reader, "decrypt"):  # Try decryption if method exists
-                                reader.decrypt('')
-                        except:
-                            print(f"Warning: PDF file '{file_path}' might be encrypted and couldn't be processed.")
-                            return ""
+                    # Handle encryption in a version-agnostic way
+                    try:
+                        if hasattr(reader, "is_encrypted") and reader.is_encrypted:
+                            # Try decrypting with empty password
+                            reader.decrypt('')
+                    except:
+                        print(f"Warning: PDF file '{file_path}' appears encrypted. Cannot extract text.")
+                        return ""
 
                     for page in reader.pages:
                         page_text = page.extract_text()
@@ -1464,68 +1619,6 @@ if __name__ == "__main__":
     )
     generator.orchestrate_generation()
     print("----------------------------------------------------")
-
-
-
-# Welcome to the AI Novel Generator!
-# Please ensure your Ollama server is running and the model is available.
-# Enter Ollama model name (default: gemma3:12b): gemma3:12b
-# Using Ollama Model: gemma3:12b at http://localhost:11434/api/generate
-# ----------------------------------------------------
-# Enter path to resume file (text or PDF) (or press Enter to skip): /content/Jessica_Holdens_resume.pdf
-# Successfully extracted text from PDF: /content/Jessica_Holdens_resume.pdf
-# Enter the novel's subject/premise (Type 'ENDINPUT' on a new line when done, or just press Enter if input is short):
-# The salt-laced air of Los Angeles had always felt like a distant cousin to Jessica's soul, a mere whisper of the vast, blue heart she felt beating within her. Eighteen years had etched a quiet yearning onto her spirit, a pull towards the ocean that went deeper than simple admiration. It was a recognition, a silent conversation held across the sandy divide.    Then came the dreams. At first, they were fleeting glimpses – the shimmer of unseen depths, the murmur of voices she couldn't quite grasp, a profound sense of belonging to a place she'd never seen. But since her eighteenth birthday, the whispers had grown insistent, the glimmers brighter, each nocturnal voyage tugging her further into a reality that felt both alien and intimately familiar. A world veiled in a sapphire haze, humming with an ancient magic, was calling her home.    One ordinary Sunday morning, the call shattered the fragile membrane of her waking life. An overwhelming vision flooded her senses – a swirling vortex of turquoise, the mournful cry of unseen creatures – followed by a blinding flash, and then… nothing.    She awoke to a world reborn. Gone was the familiar clutter of her bedroom, replaced by an endless expanse of ocean, its surface alive with a shimmering, sentient energy. The Blueward Deep. A name that echoed in the deepest chambers of her heart, a forgotten world whispered about only in the faintest of myths, had claimed her entirely.    The revelation that she was more than a visitor struck her with the force of a tidal wave. Heir. The word resonated with the ocean's hum, a legacy woven into the very currents. Tideborn. Endowed with a rare and potent gift called Soulcurrent, she could feel the ocean's pulse, a symphony of ebb and flow she instinctively understood. The waters responded to her, currents bending at her unspoken will, and within their depths, she could almost hear the echoes of ancient memories.    But this homecoming was shadowed by peril. Selmyra was not at peace. A malevolent force, the Drowned Court, clawed at the ocean's magic, their hunger for power twisting the once-harmonious currents into weapons of destruction. Monstrous sea beasts, their eyes gleaming with unnatural malice, patrolled the depths. Dark rifts scarred the ocean's surface, spewing forth chaotic energies. And a chilling dread hung in the water – the slow, insidious awakening of The Abyss, a slumbering, god-like entity whose stirring threatened to swallow Selmyra whole.    Amidst this breathtaking yet terrifying reality, Jessica’s innate empathy for the ocean became her unexpected strength. The silent suffering of the corrupted waters resonated within her, fueling a fierce protectiveness. And then there was Kaelen.    He moved with the fluid grace of the tides, his eyes the deep, calming blue of a twilight sea. A Tideborn himself, his connection to Selmyra was profound, yet it was the unexpected resonance with Jessica’s Soulcurrent that sparked a different kind of current between them perhaps romance. In his steady gaze, she found not just an ally, but a silent understanding that mirrored her own deep connection to the ocean. His presence was a comforting anchor in this bewildering world, a warmth that spread through her like sunlight on the water’s surface.    Guided by fragmented visions – a girl lost to the churning waves, cryptic flashbacks that felt both alien and achingly familiar – Jessica knew her arrival was no mere chance. The mysterious rescue on a beach years ago, a memory that flickered at the edges of her awareness, seemed to hold a key. And the truth of the Tideborn lineage, the ancient magic that pulsed within her veins, was a mystery she desperately needed to unravel.    Could she, a dreamer pulled from a world she barely knew she'd left, become the anchor of Selmyra against the rising tide of madness? And could the tentative warmth and feelings she felt for Kaelen blossom amidst the looming war, a fragile bloom in a world teetering on the brink?    Her journey would plunge her into the heart of Selmyra’s deepest secrets – where trust was as treacherous as a hidden reef, alliances shifted with the currents of hidden agendas, and the ocean itself seemed to hold its breath, waiting. As a Tideborn wielding the rare Soulcurrent, Jessica would have to awaken the full extent of her power, to face the shadows that lurked beneath the waves, and to choose: would she rise with the tide, or be swallowed by the depths? The fate of Selmyra, and perhaps her own heart, hung in the balance.
-# ENDINPUT
-# Enter the desired author style (e.g., 'Stephen King', 'Jane Austen'): Victoria Aveyard- \n Genre: ROMANCE,FANTASY,DYSTOPIAN,YOUNG ADULT,HOT,SEXY
-# Enter the genre(s) (e.g., 'Sci-Fi/Thriller', 'Historical Romance'):  ROMANCE,FANTASY,DYSTOPIAN,YOUNG ADULT,HOT,SEXY
-# NovelGenerator initialized.
-#   Subject: The salt-laced air of Los Angeles had always felt like a distant cousin to Jessica's soul, a mere wh...
-#   Author Style: Victoria Aveyard- \n Genre: ROMANCE,FANTASY,DYSTOPIAN,YOUNG ADULT,HOT,SEXY
-#   Genre: ROMANCE,FANTASY,DYSTOPIAN,YOUNG ADULT,HOT,SEXY
-#   Resume provided: Yes
-#   Number of chapters will be determined automatically.
-# --- Starting Novel Generation Pipeline ---
-
-# --- Generating Foundational Elements ---
-# Step 1.1: Generating Character Profiles...
-# Generated 3 character profiles: Jessica Holdens, Kaelen Vesper, Lady Morwen Ashworth
-
-# Step 1.2: Generating World Details...
-# Generated World Details for 'Selmyra'.
-
-# Step 1.3: Generating Themes and Motifs...
-# Generated Themes: ["Destiny vs. Free Will: Jessica’s arrival and “heir” status challenge the notion of predetermined fate, while her choices shape Selmyra's future.", 'Environmental Corruption & Responsibility: The Drowned Court’s actions and The Abyss’s stirring highlight the consequences of exploiting natural resources and the importance of ecological stewardship.', 'Trauma and Healing: Kaelen’s past and Lady Morwen’s descent explore the long-term effects of trauma and the possibility of finding solace and redemption.', 'Belonging & Identity: Jessica’s journey is about finding her place in a world she never knew, grappling with her dual heritage and defining her own identity.', 'RECURRING MOTIFS:', 'Saltwater: Represents both life and decay, purity and corruption.', 'Bioluminescence: Symbolizes hidden knowledge, magic, and the beauty that can exist even in darkness.', 'Echoes/Resonance: Represents fragmented memories, the weight of the past, and the interconnectedness of Selmyra’s inhabitants.', 'Shells: Symbolize protection, secrets, and the fragility of life.', "Turquoise/Sapphire Hues: Represent the alluring and deceptive nature of Selmyra's magic."]
-# Generated Motifs: ['Saltwater: Represents both life and decay, purity and corruption.', 'Bioluminescence: Symbolizes hidden knowledge, magic, and the beauty that can exist even in darkness.', 'Echoes/Resonance: Represents fragmented memories, the weight of the past, and the interconnectedness of Selmyra’s inhabitants.', 'Shells: Symbolize protection, secrets, and the fragility of life.', "Turquoise/Sapphire Hues: Represent the alluring and deceptive nature of Selmyra's magic."]
-
-# Step 1.4: Generating High-Level Plot Outline and Determining Chapter Count...
-# Generated High-Level Plot Outline:
-# **Act I (Setup):** Jessica’s ordinary life is shattered when she's pulled from her bedroom and awakens in the underwater realm of Selmyra, discovering she is a Tideborn heir with a rare Soulcurrent ability. She meets Kaelen, who becomes her guide, while the looming threat of the Drowned Court and the stirring of The Abyss are introduced, establishing the immediate danger to Selmyra. The inciting incident is her arrival and the revelation of her heritage, setting her on a path to uncover her purpose and the secrets of her past.
-
-# **Act II (Confrontation):** Jessica undergoes rigorous training to harness her Soulcurrent, facing trials that test her abilities and reveal fragmented memories of a past life connected to Selmyra. She uncovers a conspiracy within the Drowned Court, led by Lady Morwen, who seeks to awaken The Abyss for power, forcing Jessica and Kaelen to confront escalating conflicts and navigate treacherous alliances. A pivotal moment occurs when Jessica discovers a hidden connection to Lady Morwen, complicating her understanding of the conflict and forcing her to question everything she thought she knew.
-
-# **Act III (Resolution):** Jessica confronts Lady Morwen in a final, desperate battle to prevent the awakening of The Abyss, utilizing her fully realized Soulcurrent abilities and confronting the truth about her past and Lady Morwen’s tragic history. The conflict culminates in a choice: sacrifice a piece of herself to stabilize the ocean’s magic or risk Selmyra’s destruction, ultimately leading to a bittersweet victory and a new era of balance. Jessica embraces her role as a protector of Selmyra, forging a path towards a future where her human and Tideborn identities intertwine.
-# LLM suggested 35 chapters for the novel.
-# Foundational elements generated successfully.
-
-# --- Generating Detailed Chapter-by-Chapter Plans ---
-# Generating detailed plan text for 35 chapters (this may take a while)...
-# ERROR: No chapter plans were successfully parsed. The LLM output might not conform to the expected structure.
-# --- LLM Output Start (first 2000 chars) ---
-# Okay, here's a detailed chapter-by-chapter plan for your romance, fantasy, dystopian YA novel, structured as requested. It's a substantial amount of detail, designed to be a working guide. I'm aiming for a Victoria Aveyard-esque feel – morally grey characters, a strong sense of atmosphere, and a focus on internal struggles alongside external conflicts.
-
-# **Chapter 1 - The Salt-Kissed Echo:**
-# 1.  CHAPTER GOAL: Introduce Jessica, establish her connection to the ocean, and initiate the inciting incident - her abrupt transportation to Selmyra. This chapter establishes the mystery and disorientation that will drive the initial plot.
-# 2.  KEY SCENES:
-#     - Scene 1: Jessica's morning routine, feeling a vague restlessness. Location: Jessica's bedroom. Characters Involved: Jessica. Key Revelation/Turning Point/Outcome: Jessica experiences a particularly vivid dream, more intense than usual.
-#     - Scene 2: The vision floods Jessica’s senses – turquoise vortex, mournful cries, blinding flash. Location: Jessica's bedroom. Characters Involved: Jessica. Key Revelation/Turning Point/Outcome: Jessica is pulled from her world.
-#     - Scene 3: Jessica awakens in the Blueward Deep, disoriented and surrounded by strange, bioluminescent flora. Location: The Blueward Deep. Characters Involved: Jessica. Key Revelation/Turning Point/Outcome: Jessica realizes she's no longer in her bedroom.
-# 3.  CHARACTER DEVELOPMENT FOCUS: Jessica: Initially bewildered and frightened, demonstrating a quiet strength as she begins to assess her situation.
-# 4.  PLOT ADVANCEMENT: Introduces the central conflict – Jessica’s displacement and the mystery of Selmyra.
-# 5.  TIMELINE & PACING: Takes place within a few hours. Pacing: Rapid, disorienting.
-# 6.  EMOTIONAL TONE (End of Chapter): Disoriented, frightened, but with a burgeoning sense of wonder.
-# 7.  CONNECTION TO NEXT CHAPTER (Setup/Hook): Jessica notices a faint, familiar resonance within the ocean’s hum – a feeling she can't explain.
-
-# **Chapter 2 - Currents of Rec
-# --- LLM Output End ---
-# ----------------------------------------------------
+    print("Novel generation process completed. Check the output directory for your novel and metadata files.")
+    print("Thank you for using the AI Novel Generator!")
+    print("----------------------------------------------------")
