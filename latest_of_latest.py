@@ -1,9 +1,11 @@
 import os
 import random
 import re
-from langchain_community.chat_models import ChatOllama
-from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
-from langchain.chains import LLMChain 
+# from langchain_community.chat_models import ChatOllama # Old import
+from langchain_ollama import ChatOllama # New recommended import
+from langchain_core.messages import HumanMessage, SystemMessage # For direct message construction
+# from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate # Less needed now for direct construction
+# from langchain.chains import LLMChain # LLMChain is still used for some agents, but not in the problematic path
 from tenacity import retry, stop_after_attempt, wait_exponential, RetryError
 import json
 import datetime
@@ -20,7 +22,7 @@ from rich.syntax import Syntax
 from rich.rule import Rule
 
 # --- CONFIGURATION ---
-SELECTED_MODEL_NAME = "qwen2:7b" # Default, user can override
+SELECTED_MODEL_NAME = "qwen3" # Default, user can override
 OLLAMA_BASE_URL = "http://localhost:11434"
 MAX_EXTRACTION_ATTEMPTS = 2 
 MAX_PROSE_REVISION_ATTEMPTS = 1 # Max times to run editor/reviser loop per chapter
@@ -65,7 +67,7 @@ class NovelGenerator:
         
         self.foundational_elements: Optional[Dict[str, Any]] = None
         self.detailed_chapter_plans: List[Dict[str, Any]] = []
-        self.generated_chapters_prose: Dict[int, str] = {} # Stores FINALIZED prose for each chapter
+        self.generated_chapters_prose: Dict[int, str] = {} 
         self.character_states_after_chapter: Dict[int, Dict[str, Any]] = {}
 
         self.console.print(f"NovelGenerator initialized for Ollama (Model: [bold cyan]{self.ollama_model_name}[/bold cyan]). Output: [green]{self.output_dir}[/green]")
@@ -98,12 +100,12 @@ class NovelGenerator:
         )
 
     async def _ollama_generate_text(self, prompt: str, system_message: Optional[str] = None, temperature: Optional[float]=None, json_mode: bool = False) -> str:
+        """Generates text using Ollama, returns raw string output. Can request JSON format from Ollama."""
         messages = []
         if system_message:
-            messages.append(SystemMessagePromptTemplate.from_template(system_message).format())
-        messages.append(HumanMessagePromptTemplate.from_template(prompt).format())
+            messages.append(SystemMessage(content=system_message)) # Direct construction
+        messages.append(HumanMessage(content=prompt)) # Direct construction
         
-        # Use provided temperature or default to 0.7
         current_temp = temperature if temperature is not None else 0.7
         llm_instance = self._get_ollama_llm(temperature=current_temp)
         
@@ -148,7 +150,6 @@ Begin JSON output now:
 """
         system_extraction_prompt = "You are an AI assistant that converts unstructured or semi-structured text into perfectly valid JSON according to provided instructions."
         
-        # Use low temp for extraction
         extracted_json_str = await self._ollama_generate_text(
             extraction_prompt, 
             system_message=system_extraction_prompt, 
@@ -176,7 +177,6 @@ Begin JSON output now:
     async def generate_foundational_elements(self):
         self.console.print(Rule("[bold_blue]Generating Foundational Elements (LLM Text Extraction)[/bold_blue]", style="blue"))
 
-        # --- 1. Character Profiles ---
         self.console.print("[cyan]Step 1.1: Generating Character Profiles...[/cyan]")
         num_chars_to_generate = Prompt.ask(
             Text("How many primary characters to generate (e.g., 3-5)?", style="yellow"),
@@ -258,7 +258,6 @@ Role: Antagonist
         for profile_dict in character_profiles_list:
             self.console.print(Panel(json.dumps(profile_dict, indent=2), title=f"Character: {profile_dict.get('name', 'Unknown')}", border_style="magenta", expand=False))
 
-        # --- 2. World Details ---
         self.console.print("\n[cyan]Step 1.2: Generating World Details...[/cyan]")
         world_gen_prompt = f"""
 Based on the novel's subject ("{self.subject}"), genre ("{self.genre}"), and author style ("{self.author_style}"), generate detailed world-building elements.
@@ -293,7 +292,6 @@ Provide the following information, clearly labeled:
 
         self.console.print(Panel(json.dumps(world_details_dict, indent=2), title="World Details", border_style="yellow", expand=False))
 
-        # --- 3. Themes and Motifs ---
         self.console.print("\n[cyan]Step 1.3: Generating Themes and Motifs...[/cyan]")
         themes_gen_prompt = f"""
 Based on the novel's subject ("{self.subject}"), genre ("{self.genre}"), the generated character profiles, and world details, identify and articulate the core themes and potential recurring motifs.
@@ -329,7 +327,6 @@ Provide the following, clearly labeled:
 
         self.console.print(Panel(json.dumps(themes_motifs_dict, indent=2), title="Themes & Motifs", border_style="blue", expand=False))
 
-        # --- 4. Plot Outline ---
         self.console.print("\n[cyan]Step 1.4: Generating Plot Outline...[/cyan]")
         plot_gen_prompt = f"""
 Based on the novel's subject ("{self.subject}"), genre ("{self.genre}"), character profiles, world details, and identified themes, create a compelling plot outline.
@@ -487,33 +484,35 @@ Provide the following details for Chapter {i}, clearly labeled using Markdown-st
         
         self.console.print("[bold green]Detailed Chapter Plans generation complete.[/bold green]")
 
-    async def _summarize_prose_with_llm(self, prose: str, chapter_num: int, max_words: int = 200) -> str:
+    async def _summarize_prose_with_llm(self, prose: str, chapter_num: int, max_words: int = 250) -> str: 
         self.console.print(f"[dim]Generating LLM-based summary for prose of Chapter {chapter_num}...[/dim]")
-        summarizer_llm = self._get_ollama_llm(temperature=0.3, num_predict=max_words + 100) # + buffer for LLM verbosity
+        summarizer_llm = self._get_ollama_llm(temperature=0.3, num_predict=max_words + 100) 
         
         summary_prompt = f"""
-Concisely summarize the key events, critical plot advancements, significant character developments (emotions, decisions, new knowledge), and any cliffhangers or unresolved threads from the following chapter prose.
-The summary should be around {max_words} words and serve as a "Previously On..." style recap for the writer to begin the next chapter. Focus on information crucial for continuity.
+Concisely summarize the key events, critical plot advancements, significant character developments (emotions, decisions, new knowledge, relationship shifts), and any cliffhangers or unresolved threads from the following chapter prose.
+The summary should be approximately {max_words} words and serve as a "Previously On..." style recap for the writer to begin the next chapter. Focus on information crucial for continuity and character state.
 
-Chapter {chapter_num} Prose to Summarize (first ~3000 chars):
+Chapter {chapter_num} Prose to Summarize (first ~4000 chars for context):
 ---
-{prose[:3000]}{'...' if len(prose) > 3000 else ''}
+{prose[:4000]}{'...' if len(prose) > 4000 else ''}
 ---
+(You are summarizing the FULL chapter prose that was provided to you implicitly)
 
-Provide ONLY the summary text.
+Provide ONLY the summary text. Be factual and objective.
 """
-        system_summary_prompt = "You are an expert at summarizing novel chapters for continuity purposes."
+        system_summary_prompt = "You are an expert at summarizing novel chapters for continuity purposes, focusing on plot, character changes, and unresolved elements."
         
         summary_text = await self._ollama_generate_text(summary_prompt, system_message=system_summary_prompt)
         if summary_text.startswith("Error:") or not summary_text.strip():
-            self.console.print(f"[orange_red1]LLM Summarization failed for Chapter {chapter_num}. Using truncation.[/orange_red1]")
+            self.console.print(f"[orange_red1]LLM Summarization failed for Chapter {chapter_num}. Using truncation as fallback.[/orange_red1]")
             self._log_to_file(f"chapter_{chapter_num}_summary_error.txt", f"LLM summarization failed. Fallback to truncation. Original error: {summary_text}")
             return self._truncate_prose(prose, max_words) 
         
         self._log_to_file(f"chapter_{chapter_num}_summary_llm.txt", summary_text)
+        self.console.print(f"[dim]LLM Summary for Ch. {chapter_num} generated.[/dim]")
         return summary_text
 
-    def _truncate_prose(self, prose: str, max_words: int = 150) -> str:
+    def _truncate_prose(self, prose: str, max_words: int = 200) -> str:
         words = prose.split()
         if len(words) > max_words:
             return " ".join(words[:max_words]) + "..."
@@ -539,19 +538,19 @@ Current Character States (before this chapter):
 {json.dumps(current_states, indent=2)}
 ```
 
-Chapter {chapter_num} Prose (first ~2000 chars for context):
+Chapter {chapter_num} Prose (first ~3000 chars for context):
 ---
-{chapter_prose[:2000]}{'...' if len(chapter_prose) > 2000 else ''}
+{chapter_prose[:3000]}{'...' if len(chapter_prose) > 3000 else ''}
 ---
 (You are analyzing the FULL chapter prose that was provided to you implicitly)
 
 Based on the FULL chapter prose, for each key character ({', '.join(char_names)}), describe any significant changes to their:
-1.  `status_or_condition`: (e.g., "Injured", "Captured", "Safe", "Emotionally drained")
-2.  `current_location`: (If changed or noteworthy)
-3.  `prevailing_emotion`: (Their dominant emotion at the end of the chapter)
-4.  `newly_acquired_knowledge_or_realizations`: (Key things they learned or understood)
-5.  `key_relationships_update`: (How their relationships with other key characters changed, e.g., "Strengthened bond with Jax", "Increased suspicion of Thorne")
-6.  `immediate_goal_or_motivation_shift`: (Any new immediate goals or changes in their driving motivations)
+1.  `status_or_condition`: (e.g., "Injured", "Captured", "Safe", "Emotionally drained", "More determined")
+2.  `current_location`: (If changed or noteworthy, be specific)
+3.  `prevailing_emotion`: (Their dominant emotion or emotional state at the end of the chapter)
+4.  `newly_acquired_knowledge_or_realizations`: (Key things they learned, understood, or misconceptions cleared)
+5.  `key_relationships_update`: (How their relationships with other key characters changed, e.g., "Strengthened bond with Jax due to shared ordeal", "Increased suspicion of Thorne after witnessing his cruelty")
+6.  `immediate_goal_or_motivation_shift`: (Any new immediate goals, or changes in their driving motivations based on chapter events)
 
 Output your analysis as a valid JSON object where keys are character names. Each value should be an object with the fields above.
 If a character's state is largely unchanged in this chapter, you can note that or provide minimal updates.
@@ -560,17 +559,15 @@ Begin JSON object output now:
 """
         system_update_prompt = "You are an expert in character tracking and narrative analysis. Output ONLY the JSON object detailing character state updates."
         
-        raw_state_update_text = await self._ollama_generate_text(update_prompt, system_message=system_update_prompt, temperature=0.3, json_mode=True) # Request JSON
+        raw_state_update_text = await self._ollama_generate_text(update_prompt, system_message=system_update_prompt, temperature=0.2, json_mode=True) 
         
         if raw_state_update_text.startswith("Error:"):
             self.console.print(f"[bold red]LLM failed to generate text for character state update after Ch {chapter_num}.[/bold red]")
             self._log_to_file("character_state_errors.log", f"Chapter {chapter_num} state update LLM error: {raw_state_update_text}")
             return current_states
 
-        # Since json_mode=True was used, _ollama_generate_text should return a string that is valid JSON.
-        # We still use _extract_data_with_llm as a robust parser that can handle minor LLM deviations from pure JSON.
         updated_states_dict = await self._extract_data_with_llm(
-            raw_text_from_llm=raw_state_update_text, # This should already be a JSON string
+            raw_text_from_llm=raw_state_update_text,
             extraction_target_description="character state updates after chapter " + str(chapter_num),
             desired_format_description="A Python dictionary where keys are character names and values are dictionaries with keys like 'status_or_condition', 'current_location', etc.",
             example_json_output='{"Elara": {"status_or_condition": "Exhausted", "prevailing_emotion": "Determined"}, "Thorne": {"prevailing_emotion": "Frustrated"}}'
@@ -597,7 +594,7 @@ Begin JSON object output now:
             if canonical_char_name not in final_states: 
                  final_states[canonical_char_name] = {}
             
-            if "history" not in final_states[canonical_char_name]:
+            if "history" not in final_states[canonical_char_name]: 
                 final_states[canonical_char_name]["history"] = []
             
             update_summary = {k:v for k,v in updates.items()}
@@ -605,10 +602,11 @@ Begin JSON object output now:
             final_states[canonical_char_name].update(updates) 
 
         self._log_to_file(f"chapter_{chapter_num}_character_states.json", json.dumps(final_states, indent=2))
+        self.console.print(f"[dim]Character states updated for Ch. {chapter_num}.[/dim]")
         return final_states
 
+
     def _build_context_string_for_agents(self, chapter_num: int, current_character_states: Dict[str, Any], previous_chapter_llm_summary: str) -> str:
-        """Builds the continuity context string using LLM-generated summary."""
         if not self.foundational_elements:
             return "Error: Foundational elements missing."
         fe = self.foundational_elements
@@ -691,17 +689,15 @@ Begin JSON object output now:
 """
         system_editor_prompt = "You are a meticulous novel editor. Provide constructive, specific feedback in the requested JSON format."
         
-        # Generate raw text for editor feedback, requesting JSON format from Ollama
-        raw_editor_feedback_text = await self._ollama_generate_text(editor_prompt, system_message=system_editor_prompt, temperature=0.4, json_mode=True)
+        raw_editor_feedback_text = await self._ollama_generate_text(editor_prompt, system_message=system_editor_prompt, temperature=0.2, json_mode=True) 
         
         if raw_editor_feedback_text.startswith("Error:"):
             self.console.print(f"[bold red]Editor agent LLM call failed for Chapter {chapter_num}.[/bold red]")
             self._log_to_file(f"chapter_{chapter_num}_editor_error.txt", f"LLM call error: {raw_editor_feedback_text}")
             return {"overall_assessment": "Editor LLM call failed.", "feedback_points": [], "revision_needed": False, "error": True}
 
-        # Extract structured feedback from the LLM's (hopefully) JSON output
         editor_feedback = await self._extract_data_with_llm(
-            raw_text_from_llm=raw_editor_feedback_text, # This should be a JSON string
+            raw_text_from_llm=raw_editor_feedback_text, 
             extraction_target_description=f"editorial feedback for Chapter {chapter_num}",
             desired_format_description="A JSON object with keys: 'overall_assessment' (string), 'feedback_points' (list of strings), 'revision_needed' (boolean).",
             example_json_output='{"overall_assessment": "Good start, but needs work on pacing.", "feedback_points": ["Point 1...", "Point 2..."], "revision_needed": true}'
@@ -808,6 +804,8 @@ Begin revised Chapter {chapter_num} prose now:
         with Progress(*progress_columns, console=self.console, transient=False) as progress_bar:
             prose_task = progress_bar.add_task("[#FFBF00]Processing Chapters...", total=len(self.detailed_chapter_plans))
 
+            previous_chapter_llm_summary = ""
+
             for chapter_plan in self.detailed_chapter_plans:
                 chapter_num = chapter_plan.get('chapter_number', 0)
                 chapter_title = chapter_plan.get('title', f'Chapter {chapter_num}')
@@ -817,16 +815,8 @@ Begin revised Chapter {chapter_num} prose now:
 
                 states_before_this_chapter = self.character_states_after_chapter.get(chapter_num - 1, current_character_states)
                 
-                prev_chapter_llm_summary = ""
-                if chapter_num > 1 and (chapter_num - 1) in self.generated_chapters_prose:
-                    prev_prose = self.generated_chapters_prose[chapter_num - 1]
-                    prev_chapter_llm_summary = await self._summarize_prose_with_llm(prev_prose, chapter_num -1, max_words=250) # Increased summary length
-                    if prev_chapter_llm_summary.startswith("Error:"):
-                        self.console.print(f"[orange_red1]Using truncated summary for Ch {chapter_num-1} due to LLM summarization error.[/orange_red1]")
-                        prev_chapter_llm_summary = self._truncate_prose(prev_prose, max_words=250)
-                
                 continuity_context_for_drafting = self._build_context_string_for_agents(
-                    chapter_num, states_before_this_chapter, prev_chapter_llm_summary
+                    chapter_num, states_before_this_chapter, previous_chapter_llm_summary 
                 )
 
                 prose_prompt = f"""
@@ -868,6 +858,7 @@ Begin Chapter {chapter_num} prose now:
                     self.generated_chapters_prose[chapter_num] = f"Error: Could not generate DRAFT prose. Details: {draft_prose}"
                     current_character_states = await self._update_character_states_from_prose(chapter_num, "PROSE GENERATION FAILED", states_before_this_chapter)
                     self.character_states_after_chapter[chapter_num] = current_character_states
+                    previous_chapter_llm_summary = await self._summarize_prose_with_llm(self.generated_chapters_prose[chapter_num], chapter_num, max_words=250)
                     progress_bar.advance(prose_task)
                     continue 
 
@@ -879,7 +870,7 @@ Begin Chapter {chapter_num} prose now:
                 for rev_attempt in range(MAX_PROSE_REVISION_ATTEMPTS):
                     progress_bar.update(prose_task, description=f"[#FFBF00]Ch. {chapter_num}: Editing (Pass {rev_attempt+1})...[/]")
                     editor_feedback_data = await self.run_prose_editor_agent(
-                        current_prose_iteration, chapter_plan, chapter_num, states_before_this_chapter, prev_chapter_llm_summary
+                        current_prose_iteration, chapter_plan, chapter_num, states_before_this_chapter, previous_chapter_llm_summary 
                     )
                     
                     if editor_feedback_data is None or editor_feedback_data.get("error"):
@@ -897,7 +888,7 @@ Begin Chapter {chapter_num} prose now:
                     progress_bar.update(prose_task, description=f"[#FFBF00]Ch. {chapter_num}: Revising (Pass {rev_attempt+1})...[/]")
                     current_prose_iteration = await self.run_prose_revision_agent(
                         current_prose_iteration, editor_feedback_data.get("feedback_points", []),
-                        chapter_plan, chapter_num, states_before_this_chapter, prev_chapter_llm_summary
+                        chapter_plan, chapter_num, states_before_this_chapter, previous_chapter_llm_summary
                     )
                     self.console.print(f"[green]Chapter {chapter_num} prose revised (Pass {rev_attempt+1}).[/green]")
                     self._log_to_file(f"chapter_{chapter_num}_prose_REVISED_Pass{rev_attempt+1}.txt", current_prose_iteration)
@@ -910,6 +901,15 @@ Begin Chapter {chapter_num} prose now:
                 )
                 self.character_states_after_chapter[chapter_num] = states_after_this_chapter
                 current_character_states = states_after_this_chapter 
+
+                if chapter_num < len(self.detailed_chapter_plans): 
+                    progress_bar.update(prose_task, description=f"[#FFBF00]Ch. {chapter_num}: Summarizing for next...[/]")
+                    previous_chapter_llm_summary = await self._summarize_prose_with_llm(
+                        self.generated_chapters_prose[chapter_num], chapter_num, max_words=250
+                    )
+                    if previous_chapter_llm_summary.startswith("Error:"):
+                         self.console.print(f"[orange_red1]Using truncated summary for Ch {chapter_num} due to LLM summarization error.[/orange_red1]")
+                         previous_chapter_llm_summary = self._truncate_prose(self.generated_chapters_prose[chapter_num], max_words=250)
 
                 progress_bar.advance(prose_task)
         self.console.print("[bold green]Novel Prose generation and refinement complete.[/bold green]")
@@ -1093,8 +1093,8 @@ async def main_terminal_advanced():
 
 if __name__ == "__main__":
     console.print(f"[info]Script starting... Default Ollama Model: [bold cyan]{SELECTED_MODEL_NAME}[/bold cyan] at [underline]{OLLAMA_BASE_URL}[/underline][/info]")
-    console.print(f"[italic yellow]Make sure your Ollama server is running and the model '{SELECTED_MODEL_NAME}' is available.[/italic]")
-    console.print(f"[italic yellow]You can typically pull a model using: ollama pull {SELECTED_MODEL_NAME}[/italic yellow]")
+    console.print(f"[yellow][italic]Make sure your Ollama server is running and the model '{SELECTED_MODEL_NAME}' is available.[/italic][/yellow]")
+    console.print(f"[yellow][italic]You can typically pull a model using: ollama pull {SELECTED_MODEL_NAME}[/italic][/yellow]")
     
     import nest_asyncio
     nest_asyncio.apply()
