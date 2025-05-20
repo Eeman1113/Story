@@ -1,29 +1,28 @@
 from dotenv import load_dotenv
 import os
+import random # Added for random filename generation
+import string # Added for random filename generation
 # Langchain imports
-from langchain_community.chat_models import ChatOllama # Changed from ChatGroq
+from langchain_community.chat_models import ChatOllama 
 from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
-from langchain_community.document_loaders import PyPDFLoader # Common location for PyPDFLoader
+from langchain_community.document_loaders import PyPDFLoader 
 import docx
 
-# Load environment variables (if any are still needed, e.g., for other services)
+# Load environment variables
 load_dotenv()
 
 # Constants
 DEFAULT_MODEL = "qwen3" # IMPORTANT: Replace "llama3" with the actual model name you have pulled in Ollama.
                          # For example, if you pulled "llama3:70b", use "llama3:70b".
+RANDOM_FILENAME_LENGTH = 16 # Length of the random part of the filename
 
 def create_llm():
     """Create and return a ChatOllama instance"""
-    # Ensure your Ollama service is running.
-    # By default, ChatOllama tries to connect to http://localhost:11434
     print(f"Attempting to use Ollama model: {DEFAULT_MODEL}")
     return ChatOllama(
         model=DEFAULT_MODEL,
         temperature=0.7,
-        # You can add base_url if your Ollama is not on localhost:11434
-        # base_url="http://your_ollama_host:port" 
     )
 
 class MainCharacterChain:
@@ -61,6 +60,7 @@ class TitleChain:
     PROMPT = """
     Your job is to generate the title for a novel about the following subject and main character. 
     Return a title and only a title!
+    The title should be concise and suitable for a book cover.
     The title should be consistent with the genre of the novel.
     The title should be consistent with the style of the author.
 
@@ -316,12 +316,12 @@ class WriterChain:
 
 def write_book(genre, author, title, profile, plot, summaries_dict, event_dict):
     writer_chain = WriterChain()
-    all_previous_events_narrated = [] # Tracks all events written across all chapters
-    book = {} # Stores {"Chapter Title": [paragraph_string_for_event_1, paragraph_string_for_event_2]}
+    all_previous_events_narrated = [] 
+    book = {} 
     
     for chapter_title, event_list_for_chapter in event_dict.items():
         book[chapter_title] = []
-        current_chapter_paragraphs_text = '' # Accumulates paragraphs for the current chapter
+        current_chapter_paragraphs_text = '' 
         print(f"\n--- Writing Chapter: {chapter_title} ---")
         
         current_chapter_summary = summaries_dict.get(chapter_title, f"Summary for {chapter_title} not found.")
@@ -335,13 +335,12 @@ def write_book(genre, author, title, profile, plot, summaries_dict, event_dict):
                 title=title,
                 profile=profile,
                 plot=plot,
-                previous_events=all_previous_events_narrated, # Pass all previously narrated events in the book
+                previous_events=all_previous_events_narrated, 
                 summary=current_chapter_summary,
-                previous_paragraphs=current_chapter_paragraphs_text, # Pass text of current chapter so far
+                previous_paragraphs=current_chapter_paragraphs_text, 
                 current_event=event_description
             )
             book[chapter_title].append(paragraphs_for_event)
-            # Add a clear separator if concatenating; often, each event's text is a distinct block.
             current_chapter_paragraphs_text += ("\n\n" if current_chapter_paragraphs_text else "") + paragraphs_for_event
             all_previous_events_narrated.append(f"In {chapter_title}: {event_description}")
         print(f"--- Finished Chapter: {chapter_title} ---")
@@ -351,9 +350,20 @@ class DocWriter:
     def __init__(self):
         self.doc = docx.Document()
 
-    def write_doc(self, book, chapter_dict, title, output_folder='./docs'):
+    def _generate_random_filename(self, length=RANDOM_FILENAME_LENGTH):
+        """Generates a random alphanumeric filename."""
+        # Define the characters to choose from (letters and digits)
+        alphanumeric_chars = string.ascii_letters + string.digits
+        # Generate a random string of the specified length
+        random_string = ''.join(random.choice(alphanumeric_chars) for i in range(length))
+        return random_string
+
+    def write_doc(self, book, chapter_dict, title, output_folder='./docs'): # title is still passed for the doc heading
         os.makedirs(output_folder, exist_ok=True)
-        self.doc.add_heading(title, 0)
+        
+        # Use the actual novel title for the document's internal heading
+        self.doc.add_heading(title, 0) 
+        
         for chapter_key_from_book, paragraphs_list_for_chapter in book.items():
             description = chapter_dict.get(chapter_key_from_book.strip(), f"Description for {chapter_key_from_book} not found.")
             chapter_name_display = f'{chapter_key_from_book.strip()}: {description.strip()}'
@@ -362,14 +372,28 @@ class DocWriter:
             full_chapter_text = '\n\n'.join(paragraphs_list_for_chapter)
             self.doc.add_paragraph(full_chapter_text)
         
-        filename = "".join(x for x in title if x.isalnum() or x in (' ', '-', '_')).strip().replace(' ', '_')
-        filename = (filename if filename else "Untitled_Novel") + '.docx'
+        # Generate a random filename base
+        filename_base = self._generate_random_filename()
+        filename = filename_base + '.docx'
         
         output_path = os.path.join(output_folder, filename)
-        self.doc.save(output_path)
-        print(f"Book saved as: {output_path}")
+        try:
+            self.doc.save(output_path)
+            print(f"Book saved as: {output_path}")
+        except Exception as e:
+            # This fallback is less likely to be needed with random names, but good to have.
+            print(f"Error saving document to '{output_path}': {e}")
+            fallback_filename_base = self._generate_random_filename(RANDOM_FILENAME_LENGTH - 2) # slightly shorter for fallback
+            fallback_filename = fallback_filename_base + "_fb.docx"
+            fallback_path = os.path.join(output_folder, fallback_filename)
+            try:
+                print(f"Attempting to save with fallback filename: {fallback_path}")
+                self.doc.save(fallback_path)
+                print(f"Book saved with fallback name: {fallback_path}")
+            except Exception as fe:
+                print(f"Error saving document with fallback filename '{fallback_path}': {fe}")
 
-# --- Placeholder for a more advanced Event Generation Chain ---
+
 class EventGeneratorChain:
     PROMPT = """
     You are an expert story structure analyst. Given a chapter title, a concise summary of that chapter, the overall novel plot, and the main character's profile, your task is to break down the chapter summary into a sequence of 2 to 4 distinct, actionable key events that must occur within this chapter.
@@ -404,16 +428,15 @@ class EventGeneratorChain:
             chapter_title=chapter_title,
             chapter_summary=chapter_summary
         )
-        # Parse the response: split by newline and filter out empty strings
         events = [event.strip() for event in response.strip().split('\n') if event.strip()]
-        return events if events else [f"Key development based on summary: {chapter_summary[:100]}..."] # Fallback
+        return events if events else [f"Key development based on summary: {chapter_summary[:100]}..."] 
 
 def main():
     # --- Configuration ---
     subject = 'The Last Signal from Andromeda' 
     author_style = 'Isaac Asimov with a touch of modern pacing and detailed scientific explanations'
     genre = 'Hard Sci-Fi Mystery with elements of cosmic horror'
-    resume_filename = 'kenji_gamer_resume.pdf' # Ensure this file exists in ./docs/
+    resume_filename = 'kenji_gamer_resume.pdf' 
     # --- End Configuration ---
 
     os.makedirs('./docs', exist_ok=True)
@@ -429,12 +452,25 @@ def main():
         title_chain = TitleChain()
         plot_chain = PlotChain()
         chapters_chain = ChaptersChain()
-        chapter_flow_checker_chain = ChapterFlowCheckerChain() # Instantiate new chain
-        event_generator_chain = EventGeneratorChain() # Instantiate event generator
+        chapter_flow_checker_chain = ChapterFlowCheckerChain() 
+        event_generator_chain = EventGeneratorChain() 
 
         print("Generating title...")
-        title = title_chain.run(subject, genre, author_style, profile).strip().replace('"', '') # Clean title
-        print(f"Title generated: {title}\n")
+        raw_title_output = title_chain.run(subject, genre, author_style, profile)
+        # Clean the title: take the first line, remove surrounding quotes, strip whitespace.
+        title = raw_title_output.split('\n')[0].strip()
+        if title.startswith('"') and title.endswith('"'):
+            title = title[1:-1]
+        elif title.startswith("'") and title.endswith("'"):
+            title = title[1:-1]
+        
+        if len(title) > 150 or len(title) < 3 : # Also check for too short titles which might indicate an issue
+            print(f"Warning: Generated title is unusual: '{title}'")
+            print("The LLM might not be strictly following the 'only a title' instruction or produced a very short/long title.")
+            # Even if the title is problematic for a filename, we still use it for the document heading.
+        
+        print(f"Title generated (cleaned): {title}\n")
+
 
         print("Generating plot...")
         plot = plot_chain.run(subject, genre, author_style, profile, title)
@@ -463,11 +499,11 @@ def main():
         print("--- Chapter Flow Assessment ---")
         print(flow_assessment)
         print("--- End of Assessment ---\n")
-        # At this point, you could add logic to halt or modify if the assessment is poor.
+        
 
         # --- Generate Events for each chapter using LLM ---
-        summaries_dict = {} # This will be the same as chapter_dict for summaries
-        event_dict = {}     # This will store {chapter_title: [event1, event2, ...]}
+        summaries_dict = {} 
+        event_dict = {}     
         
         print("Generating events for each chapter using LLM...")
         for chapter_title_key, chapter_summary in chapter_dict.items():
@@ -482,7 +518,7 @@ def main():
             event_dict[chapter_title_key] = events_for_chapter
             print(f"    Events: {events_for_chapter}")
         print("Event generation complete.\n")
-        # --- End Event Generation ---
+        
 
         print("Starting to write the book content...")
         book = write_book(
@@ -497,7 +533,9 @@ def main():
         print("Book content generation complete.\n")
 
         print("Saving book to .docx file...")
-        doc_writer.write_doc(book, chapter_dict, title)
+        # The 'title' variable (cleaned novel title) is passed to DocWriter
+        # to be used as the internal document heading.
+        doc_writer.write_doc(book, chapter_dict, title) 
         print("Novel generation process finished successfully!")
 
     except FileNotFoundError as e:
